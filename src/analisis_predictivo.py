@@ -113,6 +113,10 @@ best_mod = SARIMAX(y_train,
                    enforce_invertibility=False)
 best_fit = best_mod.fit(disp=False)
 
+# Gráficos de diagnóstico de SARIMAX (comentado por insuficiencia de datos)
+# best_fit.plot_diagnostics(figsize=(15, 12))
+# plt.savefig('../resultados/sarimax_diagnostics.png')
+
 train_pred_sarimax = best_fit.predict(start=y_train.index[0], end=y_train.index[-1], exog=X_train)
 test_pred_sarimax = best_fit.predict(start=y_test.index[0], end=y_test.index[-1], exog=X_test)
 
@@ -130,6 +134,14 @@ results['SARIMAX'] = {
 # Modelo XGBoost
 xgb = XGBRegressor(objective='reg:squarederror', n_estimators=1000, early_stopping_rounds=50)
 xgb.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+
+# Gráfico de importancia de características de XGBoost
+plt.figure(figsize=(10, 8))
+plt.barh(features, xgb.feature_importances_)
+plt.xlabel("Importancia de la Característica")
+plt.ylabel("Característica")
+plt.title("Importancia de la Característica en XGBoost")
+plt.savefig('../resultados/xgb_feature_importance.png')
 
 
 train_pred_xgb = xgb.predict(X_train)
@@ -152,6 +164,11 @@ m = Prophet()
 m.add_regressor('temporada_pesca')
 m.add_regressor('pretemporada')
 m.fit(prophet_train_df)
+
+# Gráfico de componentes de Prophet
+fig = m.plot_components(m.predict(prophet_train_df))
+fig.savefig('../resultados/prophet_components.png')
+
 train_future = m.make_future_dataframe(periods=0, freq='MS')
 train_future = pd.merge(train_future, prophet_train_df[['ds', 'temporada_pesca', 'pretemporada']], on='ds')
 train_pred_prophet_df = m.predict(train_future)
@@ -234,4 +251,51 @@ plt.legend()
 plt.grid(True)
 plt.savefig('../resultados/predicciones.png')
 
-print("\nGráfico de predicciones guardado como '../resultados/predicciones.png'")
+# --- Generación de reporte en Excel ---
+with pd.ExcelWriter('../resultados/reporte_predicciones.xlsx') as writer:
+    # Pestaña de Métricas
+    metrics_df = pd.DataFrame({
+        'Modelo': ['SARIMAX', 'XGBoost', 'Prophet'],
+        'MAE (Train)': [results['SARIMAX']['metrics']['train_mae'], results['XGBoost']['metrics']['train_mae'], results['Prophet']['metrics']['train_mae']],
+        'RMSE (Train)': [results['SARIMAX']['metrics']['train_rmse'], results['XGBoost']['metrics']['train_rmse'], results['Prophet']['metrics']['train_rmse']],
+        'MAE (Test)': [results['SARIMAX']['metrics']['test_mae'], results['XGBoost']['metrics']['test_mae'], results['Prophet']['metrics']['test_mae']],
+        'RMSE (Test)': [results['SARIMAX']['metrics']['test_rmse'], results['XGBoost']['metrics']['test_rmse'], results['Prophet']['metrics']['test_rmse']]
+    }).set_index('Modelo')
+    metrics_df.to_excel(writer, sheet_name='Metricas_Modelos')
+
+    # Pestaña de Predicción Final
+    best_model_name = metrics_df['RMSE (Test)'].idxmin()
+    if best_model_name == 'Prophet':
+        prediction_df = pd.DataFrame({
+            'fecha': future_pred_prophet.index,
+            'prediccion': future_pred_prophet.values,
+            'limite_inferior_ci': future_pred_prophet_ci['yhat_lower'].values,
+            'limite_superior_ci': future_pred_prophet_ci['yhat_upper'].values
+        })
+    elif best_model_name == 'SARIMAX':
+        prediction_df = pd.DataFrame({
+            'fecha': future_pred_sarimax.index,
+            'prediccion': future_pred_sarimax.values,
+            'limite_inferior_ci': future_pred_sarimax_ci.iloc[:, 0].values,
+            'limite_superior_ci': future_pred_sarimax_ci.iloc[:, 1].values
+        })
+    else: # XGBoost
+        prediction_df = pd.DataFrame({
+            'fecha': future_pred_xgb.index,
+            'prediccion': future_pred_xgb.values,
+            'limite_inferior_ci': np.nan,
+            'limite_superior_ci': np.nan
+        })
+    prediction_df.to_excel(writer, sheet_name='Prediccion_Final_2026', index=False)
+
+    # Pestaña de Validación en Test
+    validation_df = pd.DataFrame({
+        'fecha': y_test.index,
+        'real': y_test.values,
+        'pred_sarimax': test_pred_sarimax.values,
+        'pred_xgboost': test_pred_xgb,
+        'pred_prophet': test_pred_prophet.values
+    })
+    validation_df.to_excel(writer, sheet_name='Validacion_Test', index=False)
+
+print("\nReporte de predicciones guardado como '../resultados/reporte_predicciones.xlsx'")
